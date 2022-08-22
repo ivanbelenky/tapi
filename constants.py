@@ -1,5 +1,5 @@
 MAX_URL_LENGTH = 500
-MAX_RESULTS_PER_PAGE = '100'
+MAX_RESULTS_PER_PAGE = 100
 MAX_PAGES = 10
 
 ALL_USER_FIELDS = [
@@ -88,6 +88,41 @@ ALL_PLACE_FIELDS = [
     'place_type'
 ]
 
+
+ALL_SCOPES = [
+    'tweet.read',
+    'tweet.write',
+    'tweet.moderate.write',
+    'users.read',
+    'follows.read',
+    'follows.write',
+    'offline.access',
+    'space.read',
+    'mute.read',
+    'mute.write',
+    'like.read',
+    'like.write',
+    'list.read',
+    'list.write',
+    'block.read',
+    'block.write',
+    'bookmark.read',
+    'bookmark.write', 
+]
+
+REQUIRED_SCOPES = {
+    "users_tweets": ['tweet.read', 'user.read']
+}
+
+
+BASE_URL_V2 = "https://api.twitter.com/2"
+BASE_REQUEST_TOKEN_URL = "https://api.twitter.com/oauth/request_token"
+BASE_AUTHORIZE_URL = "https://api.twitter.com/oauth/authorize"
+BASE_ACCESS_TOKEN_URL = "https://api.twitter.com/oauth/access_token"
+DEFAULT_CALLBACK_URI = "https://127.0.0.1:5000/oauth/callback"
+BASE_OAUTH2_AUTHORIZE_URL = "https://twitter.com/i/oauth2/authorize"
+BASE_OAUTH2_ACCESS_TOKEN_URL = "https://api.twitter.com/2/oauth2/token"
+
 USERS_LOOKUP_BY_ID_ENDPOINT = "https://api.twitter.com/2/users"
 USERS_LOOKUP_BY_USERNAME_ENDPOINT = "https://api.twitter.com/2/users/by"
 USERS_LOOKUP_BY_USERNAME_REGEX_ENDPOINT = "https://api.twitter.com/2/users/by/username/<username>"
@@ -102,6 +137,19 @@ USERS_LOOKUP_LIKED_TWEETS_ENDPOINT = "https://api.twitter.com/2/users/<id>/liked
 USERS_LOOKUP_MENTIONS_BY_ID_ENDPOINT = "https://api.twitter.com/2/users/<id>/mentions"
 USERS_LOOKUP_TIMELINES_REVERSE_CHRONOLOGICAL_BY_ID_ENDPOINT = "https://api.twitter.com/2/users/<id>/timelines/reverse_chronological"
 USERS_LOOKUP_ME_ENDPOINT = "https://api.twitter.com/2/users/me"
+USERS_LOOKUP_BLOCKED_ENDPOINT = "https://api.twitter.com/2/users/<id>/blocking"
+USERS_LOOKUP_BOOKMARKS_ENDPOINT = "https://api.twitter.com/2/users/<id>/bookmarks"
+USERS_LOOKUP_MUTED_ENDPOINT = "https://api.twitter.com/2/users/<id>/muting"
+USERS_LOOKUP_BY_RETWEET_ENDPOINT = "https://api.twitter.com/2/tweets/<id>/retweeted_by"
+USERS_LOOKUP_THAT_LIKED_TWEET_ENDPOINT = "https://api.twitter.com/2/tweets/<tweet_id>/liking_users"
+
+TWEETS_LOOKUP_BY_USERS_ENDPOINT = "https://api.twitter.com/2/tweets"
+TWEETS_LOOKUP_BY_ID_ENDPOINT = "https://api.twitter.com/2/tweets/<id>"
+TWEETS_LOOKUP_TWEETS_QUOTES_ENDPOINT = "https://api.twitter.com/2/tweets/<id>/quote_tweets"
+TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT = "https://api.twitter.com/2/tweets/search/all"
+TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT = "https://api.twitter.com/2/tweets/search/recent"
+TWEETS_LOOKUP_COUNT_ENDPOINT = "https://api.twitter.com/2/tweets/counts/all"
+TWEETS_LOOKUP_RECENT_COUNT_ENDPOINT = "https://api.twitter.com/2/tweets/counts/recent"
 
 DEFAULT_USERS_LOOKUP_EXPANSION = []
 DEFAULT_USERS_LOOKUP_USER_FIELDS = ALL_USER_FIELDS[:6]
@@ -110,3 +158,9 @@ DEFAULT_USERS_LOOKUP_LIST_FIELDS = ALL_LIST_FIELDS[:5]
 DEFAULT_USERS_LOOKUP_MEDIA_FIELDS = []
 DEFAULT_USERS_LOOKUP_POLL_FIELDS = []
 DEFAULT_USERS_LOOKUP_PLACE_FIELDS = ALL_PLACE_FIELDS[:3]
+
+DEFAULT_TWEETS_LOOKUP_COUNT = ['start', 'end', 'tweet_count']
+
+DEFAULT_SCOPES = ['tweet.write', 'tweet.read', 'users.read', 'offline.access']
+
+IMPLEMENTED_MODELS = ['users', 'tweets']
