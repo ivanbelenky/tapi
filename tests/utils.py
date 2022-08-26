@@ -7,6 +7,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api import *
+from constants import *
 
 REFRESH_MARGIN = 60
 
@@ -15,7 +16,8 @@ def create_and_save_api():
             os.environ.get('TWITTER_CLIENT_ID'),
             os.environ.get('TWITTER_CLIENT_SECRET'),
             manual=True,
-            scopes=constants.ALL_SCOPES,
+            bearer_token=os.environ.get('TWITTER_BEARER_TOKEN'),
+            scopes=ALL_SCOPES,
         )
     with open('twitter.api', 'wb') as file:
         pickle.dump(twitter, file)

@@ -1,26 +1,33 @@
 #!/usr/bin/env python3
 
+from inspect import Attribute
 import os
 import base64
+import json
 import re
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 from requests import request
+import time
 
 from pprint import pprint
 from dotenv import load_dotenv
 from authlib.integrations.requests_client import OAuth2Session, OAuth2Auth
 
-import constants
-from fetch.lookup import UsersLookup, TweetLookup
+from constants import *
+from limiter import LIMITER
+from lookup import UsersLookup, TweetLookup
 
 load_dotenv()
 
-def paginator(tapi, lookup, max_results):
+def paginator(tapi, lookup, max_results, limit):
     url = lookup.create_url()
     next_url = url
-    for page in range(max_results//constants.MAX_RESULTS_PER_PAGE+1):
+    n_pages = max_results//MAX_RESULTS_PER_PAGE_USER+1
+    for page in range(n_pages):
+        print(f"Fetched page {page+1} of {n_pages}")
         if page != 0:
+            time.sleep(limit)
             next_url = lookup.next_page(url, response)
         if not next_url:
             break
@@ -30,8 +37,8 @@ def paginator(tapi, lookup, max_results):
         yield response.json()
         
             
-def paginate_response(session, lookup, pages):    
-    responses = [res for res in paginator(session, lookup, pages)]
+def paginate_response(session, lookup, max_results, limit):    
+    responses = [res for res in paginator(session, lookup, max_results, limit)]
     return lookup.paginate_responses(responses)
 
 
@@ -54,79 +61,156 @@ def GET(method, pagination=False):
             if not pagination:
                 res = self._get(lookup.create_url())
                 res.raise_for_status()
-                res = res.json()
+                res = res.json() if res.json().get('data') else {}
             else:
                 res = paginate_response(
                     self, 
                     lookup, 
-                    kwargs.get('max_results'))
+                    kwargs.get('max_results'),
+                    15*60//LIMITER[method.__name__]['limit']
+                )
             
             if kwargs.get('save', False):
                 lookup.save_response(res)
 
-            return res
+            return lookup.datify(res)
         except AttributeError as e:
             print(e)
             return res
         except Exception as e:
             print(f"Failed to get {method.__name__}: {e}")
+            try:
+                print(res.json().get('errors'),'\n')
+            except Exception as e:
+                pass
             return res
     return wrapper
+
+def POST(method):
+    def wrapper(self, *args, **kwargs):
+        res = None
+        try:
+            url, payload = method(self, *args, **kwargs)
+            res = self._post(url, payload)
+            res.raise_for_status() 
+        except Exception as e:
+            try:
+                pprint(res.json())
+            except:
+                pass
+            print(f"Failed to post tweet due to {e}")        
+        return res
+    return wrapper
+
 
 
 class TwitterAPI:
     def __init__(
         self, 
-        client_id, 
-        client_secret,
-        manual = True, 
-        scopes=constants.DEFAULT_SCOPES
+        client_id: str, 
+        client_secret: str,
+        manual: Optional[bool] = True,
+        bearer_token: Optional[str] = None,
+        scopes: Optional[List[str]] = DEFAULT_SCOPES
     ):
         self.scopes = scopes 
         self.client_id = client_id
         self.client_secret = client_secret
         self.session = self.init_session()
+        self.bearer_token = bearer_token
         self.manual = manual
-        
-        if manual:
-            self.manual_auth_flow()
-    
+        self.token = self.retrieve_token()
 
-    def init_session(self):
+        if manual and self._should_auth():
+            self.manual_auth_flow()
+        
+        if self._should_refresh():
+            self.refresh_token()
+
+    def init_session(self) -> OAuth2Session:
         session = OAuth2Session(
             client_id=self.client_id,
             client_secret=self.client_secret,
             scope=self.scopes,
-            redirect_uri=constants.DEFAULT_CALLBACK_URI,
+            redirect_uri=DEFAULT_CALLBACK_URI,
             code_challenge_method="S256",
         )
         return session
     
-    def create_authorization_url(self):
+    def create_authorization_url(self) -> str:
         code_verifier = base64.urlsafe_b64encode(os.urandom(40)).decode("utf-8")
         code_verifier = re.sub("[^a-zA-Z0-9]+", "", code_verifier)  
         authorization_url, _ = self.session.create_authorization_url(
-            url=constants.BASE_OAUTH2_AUTHORIZE_URL,
+            url=BASE_OAUTH2_AUTHORIZE_URL,
             code_verifier=code_verifier
         )
         self.code_verifier = code_verifier
         return authorization_url
 
-    def fetch_token(self, resp_url):
+    def fetch_token(self, resp_url) -> None:
         self.resp_url = resp_url
         token = self.session.fetch_token(
-            url=constants.BASE_OAUTH2_ACCESS_TOKEN_URL,
+            url=BASE_OAUTH2_ACCESS_TOKEN_URL,
             authorization_response=self.resp_url,
             code_verifier=self.code_verifier,
         )
         self.token = token
+        self.save_token()
 
-    def refresh_token(self):
-        self.session.refresh_token(
-            constants.BASE_OAUTH2_ACCESS_TOKEN_URL, 
-            refresh_token=self.token['refresh_token']
-        )
+    def refresh_token(self) -> None:
+        try:
+            self.token = self.session.refresh_token(
+                BASE_OAUTH2_ACCESS_TOKEN_URL, 
+                refresh_token=self.token['refresh_token']
+            )
+        except Exception as e:
+            basic_token = base64.b64encode(f'{self.client_id}:{self.client_secret}'.encode('utf-8')).decode('utf-8')
+            res = request(
+                method='POST',
+                url=BASE_OAUTH2_ACCESS_TOKEN_URL,
+                data={
+                    'refresh_token': self.token['refresh_token'],
+                    'grant_type': 'refresh_token',
+                    'client_id': self.client_id
+                },
+                headers={
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Authorization': f'Basic {basic_token}'
+                }
+            )
+            refresh_token = res.json()
+            self.token['access_token'] = refresh_token['access_token']
+            self.token['refresh_token'] = refresh_token['refresh_token']
+            self.token['expires_at'] = int(time.time()) + refresh_token['expires_in']
+        
+        self.save_token()            
+
+    def retrieve_token(self):
+        if 'twitter.token' in os.listdir('data/saved_tokens'):
+            with open('data/saved_tokens/twitter.token', 'r') as file:
+                return json.load(file)
+        else:
+            return None
+
+    def save_token(self):
+        if self.token:
+            with open('data/saved_tokens/twitter.token', 'w') as file:
+                json.dump(self.token, file)
+
+    def _should_refresh(self):
+        if self.token:
+            if int(time.time()) - REFRESH_MARGIN > self.token['expires_at']:
+                return True
+            return False
     
+    def _should_auth(self):
+        if not self.token:
+            return True
+        elif self.token['expires_at'] + REFRESH_REFRESH_MARGIN < int(time.time()):
+            return True
+        else:
+            return False
+
     def manual_auth_flow(self):
         if self.manual:
             authorization_url = self.create_authorization_url()
@@ -135,25 +219,43 @@ class TwitterAPI:
             self.fetch_token(resp_url)
 
     def _get(self, url):
+        if self._should_refresh():
+            self.refresh_token()
         return request(
             method="GET",
             url=url,
             headers={'Authorization': f"Bearer {self.token['access_token']}"}
         )
+    
+    def _post(self, url, payload):
+        if self._should_refresh():
+            self.refresh_token()
+        return request(
+            method='POST',
+            url=url,
+            json=payload,
+            headers={
+                'Authorization': f'Bearer {self.token["access_token"]}',
+                'Content-type': 'application/json'
+            }
+        )
 
     @GET
     def get_users(
         self, 
-        users_ids: list,  
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION, 
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS, 
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        save: bool = False
+        users_ids: List[str],  
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION, 
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS, 
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        save: Optional[bool] = False
     ):
         """
             expansions: ['pinned_tweet_id']
         """
-        endpoint = constants.USERS_LOOKUP_BY_ID_ENDPOINT
+        if len(users_ids) > MAX_USERS_ID:
+            raise AttributeError("User ids must not exceed 100")
+
+        endpoint = USERS_LOOKUP_BY_ID_ENDPOINT
         query = {'ids': users_ids}
         users_lookup = UsersLookup(
             endpoint=endpoint,
@@ -167,16 +269,16 @@ class TwitterAPI:
     @GET
     def get_users_by_usernames(
         self, 
-        usernames: list, 
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION, 
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS, 
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        save: bool = False,
+        usernames: List[str], 
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION, 
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS, 
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        save: Optional[bool] = False,
     ):
         """
             expansions: ['pinned_tweet_id'] 
         """
-        endpoint = constants.USERS_LOOKUP_BY_USERNAME_ENDPOINT
+        endpoint = USERS_LOOKUP_BY_USERNAME_ENDPOINT
         query = {'usernames': usernames}
         users_lookup = UsersLookup(
             endpoint=endpoint,
@@ -191,14 +293,14 @@ class TwitterAPI:
     def get_users_by_username_regex(
         self,
         username: str,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
     ):
         """
             expansions: ['pinned_tweet_id'] 
         """
-        endpoint = constants.USERS_LOOKUP_BY_USERNAME_REGEX_ENDPOINT
+        endpoint = USERS_LOOKUP_BY_USERNAME_REGEX_ENDPOINT
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<username>', username),
             expansions=expansions,
@@ -211,14 +313,14 @@ class TwitterAPI:
     def get_single_user(
         self,
         user_id: str,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
     ):
         """
             expansions: ['pinned_tweet_id'] 
         """
-        endpoint = constants.USERS_LOOKUP_BY_USERNAME_ID_ENDPOINT
+        endpoint = USERS_LOOKUP_BY_USERNAME_ID_ENDPOINT
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<id>', user_id),
             expansions=expansions,
@@ -231,16 +333,16 @@ class TwitterAPI:
     def get_user_followed_lists(
         self,
         user_id: str,
-        max_results: Optional[int] = constants.MAX_RESULTS_PER_PAGE,
-        expansions: Optional[List[str]] = constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        list_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_LIST_FIELDS,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
+        expansions: Optional[List[str]] = DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        list_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_LIST_FIELDS,
     ):
         """
             expansions: ['owner_id']
         """
-        max_results = max_results if max_results < constants.MAX_RESULTS_PER_PAGE else constants.MAX_RESULTS_PER_PAGE
-        endpoint = constants.USERS_LOOKUP_FOLLOWED_LISTS_BY_ID_ENDPOINT
+        max_results = max_results if max_results < MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = USERS_LOOKUP_FOLLOWED_LISTS_BY_ID_ENDPOINT
         query = {'max_results': [str(max_results)]}
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<id>', user_id),
@@ -255,16 +357,16 @@ class TwitterAPI:
     def get_user_list_membership(
         self,
         user_id: str,
-        max_results: Optional[int] = constants.MAX_RESULTS_PER_PAGE,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        list_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_LIST_FIELDS,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        list_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_LIST_FIELDS,
     ):
         """
             expansions: ['owner_id']
         """
-        max_results = max_results if max_results < constants.MAX_RESULTS_PER_PAGE else constants.MAX_RESULTS_PER_PAGE
-        endpoint = constants.USERS_LOOKUP_LIST_MEMBERSHIPS_BY_ID_ENDPOINT
+        max_results = max_results if max_results < MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = USERS_LOOKUP_LIST_MEMBERSHIPS_BY_ID_ENDPOINT
         query = {'max_results': [str(max_results)]}
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<id>', user_id),
@@ -279,16 +381,16 @@ class TwitterAPI:
     def get_users_owned_lists(
         self,
         user_id: str,
-        max_results: Optional[int] = constants.MAX_RESULTS_PER_PAGE,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        list_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_LIST_FIELDS,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        list_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_LIST_FIELDS,
     ):
         """
             expansions: ['owner_id']
         """
-        max_results = max_results if max_results < constants.MAX_RESULTS_PER_PAGE else constants.MAX_RESULTS_PER_PAGE
-        endpoint = constants.USERS_LOOKUP_OWNED_LISTS_BY_ID_ENDPOINT
+        max_results = max_results if max_results < MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = USERS_LOOKUP_OWNED_LISTS_BY_ID_ENDPOINT
         query = {'max_results': [str(max_results)]}
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<id>', user_id),
@@ -303,14 +405,14 @@ class TwitterAPI:
     def get_users_pinned_lists(
         self,
         user_id: str,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        list_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_LIST_FIELDS,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        list_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_LIST_FIELDS,
     ):
         """
             expansions: ['owner_id']
         """
-        endpoint = constants.USERS_LOOKUP_PINNED_LISTS_BY_ID_ENDPOINT
+        endpoint = USERS_LOOKUP_PINNED_LISTS_BY_ID_ENDPOINT
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<id>', user_id),
             expansions=expansions,
@@ -323,16 +425,16 @@ class TwitterAPI:
     def get_user_followers(
         self,
         user_id: str,
-        max_results: Optional[int] = constants.MAX_RESULTS_PER_PAGE,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_USER,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
     ):
         """
             expansions: ['pinned_tweet']
         """
-        max_results = max_results if max_results < constants.MAX_RESULTS_PER_PAGE else constants.MAX_RESULTS_PER_PAGE
-        endpoint = constants.USERS_LOOKUP_FOLLOWERS_ENDPOINT
+        max_results = max_results if max_results < MAX_RESULTS_PER_PAGE_USER else MAX_RESULTS_PER_PAGE_USER
+        endpoint = USERS_LOOKUP_FOLLOWERS_ENDPOINT
         query = {'max_results': [str(max_results)]}
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<id>', user_id),
@@ -347,16 +449,16 @@ class TwitterAPI:
     def get_user_following(
         self,
         user_id: str,
-        max_results: Optional[int] = constants.MAX_RESULTS_PER_PAGE,
-        expansions: Optional[List[str]] = constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]] = constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]] = constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_USER,
+        expansions: Optional[List[str]] = DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]] = DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]] = DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
     ):
         """
             expansions: ['pinned_tweet']
         """
-        max_results = max_results if max_results < constants.MAX_RESULTS_PER_PAGE else constants.MAX_RESULTS_PER_PAGE
-        endpoint = constants.USERS_LOOKUP_FOLLOWING_ENDPOINT
+        max_results = max_results if max_results < MAX_RESULTS_PER_PAGE_USER else MAX_RESULTS_PER_PAGE_USER
+        endpoint = USERS_LOOKUP_FOLLOWING_ENDPOINT
         query = {'max_results': [str(max_results)]}
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<id>', user_id),
@@ -371,14 +473,14 @@ class TwitterAPI:
     def get_user_liked_tweets(
         self,
         user_id: str,
-        max_results: Optional[int] = constants.MAX_RESULTS_PER_PAGE,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        media_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
-        poll_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_POLL_FIELDS,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        place_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
-        save: bool = False,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        media_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
+        poll_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_POLL_FIELDS,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        place_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
+        save: Optional[bool] = False,
     ):
         """
             expansions: [
@@ -393,10 +495,10 @@ class TwitterAPI:
                 'referenced_tweets.id.author_id'
             ]
         """
-        max_results = max_results if 5 < max_results < constants.MAX_RESULTS_PER_PAGE else constants.MAX_RESULTS_PER_PAGE
-        endpoint = constants.USERS_LOOKUP_LIKED_TWEETS_ENDPOINT
+        max_results = max_results if 5 <= max_results < MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = USERS_LOOKUP_LIKED_TWEETS_ENDPOINT
         query = {'max_results': [str(max_results)]}
-        users_lookup = UsersLookup(
+        tweets_lookup = TweetLookup(
             endpoint=endpoint.replace('<id>', user_id),
             query=query,
             expansions=expansions,
@@ -406,23 +508,23 @@ class TwitterAPI:
             user_fields=user_fields,
             place_fields=place_fields            
         )
-        return users_lookup
+        return tweets_lookup
     
     @GET(pagination=True)
     def get_users_that_liked_tweet(
         self,
         tweet_id: str,
-        max_results: Optional[int] = constants.MAX_RESULTS_PER_PAGE,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        save: bool = False,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        save: Optional[bool] = False,
     ):
         """
             expansions: ['pinned_tweet_id']
         """
-        max_results = max_results if max_results < constants.MAX_RESULTS_PER_PAGE else constants.MAX_RESULTS_PER_PAGE
-        endpoint = constants.USERS_LOOKUP_THAT_LIKED_TWEET_ENDPOINT
+        max_results = max_results if max_results < MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = USERS_LOOKUP_THAT_LIKED_TWEET_ENDPOINT
         query = {'max_results': [str(max_results)]}
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<tweet_id>', tweet_id),
@@ -437,14 +539,14 @@ class TwitterAPI:
     def get_user_mentions(
         self,
         user_id: str,
-        max_results: Optional[int] = constants.MAX_RESULTS_PER_PAGE,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
         query: Optional[Dict[str, str]] = {}, 
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        media_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
-        poll_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_POLL_FIELDS,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        place_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        media_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
+        poll_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_POLL_FIELDS,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        place_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
     ):
         """
             query : [
@@ -465,10 +567,10 @@ class TwitterAPI:
                 'referenced_tweets.id.author_id'
             ]
         """
-        max_results = max_results if max_results < constants.MAX_RESULTS_PER_PAGE else constants.MAX_RESULTS_PER_PAGE
-        endpoint = constants.USERS_LOOKUP_MENTIONS_BY_ID_ENDPOINT
+        max_results = max_results if 5 <= max_results <= MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = USERS_LOOKUP_MENTIONS_BY_ID_ENDPOINT
         query['max_results'] = [str(max_results)]
-        users_lookup = UsersLookup(
+        tweets_lookup = TweetLookup(
             endpoint=endpoint.replace('<id>', user_id),
             query=query,
             expansions=expansions,
@@ -478,19 +580,20 @@ class TwitterAPI:
             user_fields=user_fields,
             place_fields=place_fields            
         )
-        return users_lookup
+        return tweets_lookup
 
     @GET
-    def user_timelines_reverse_chronological(
+    def get_user_timelines_reverse_chronological(
         self,
         user_id: str,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
         query: Dict[str, Any] = {},
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        media_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
-        poll_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_POLL_FIELDS,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        place_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        media_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
+        poll_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_POLL_FIELDS,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        place_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
     ):
         """
             query : [
@@ -511,9 +614,10 @@ class TwitterAPI:
                 'referenced_tweets.id.author_id'
             ]
         """
-        endpoint = constants.USERS_LOOKUP_TIMELINES_REVERSE_CHRONOLOGICAL_BY_ID_ENDPOINT
-        query = {'max_results': [constants.MAX_RESULTS_PER_PAGE]}
-        users_lookup = UsersLookup(
+        max_results = max_results if max_results < MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = USERS_LOOKUP_TIMELINES_REVERSE_CHRONOLOGICAL_BY_ID_ENDPOINT
+        query['max_results'] = [str(max_results)]
+        tweets_lookup = TweetLookup(
             endpoint=endpoint.replace('<id>', user_id),
             query=query,
             expansions=expansions,
@@ -523,24 +627,22 @@ class TwitterAPI:
             user_fields=user_fields,
             place_fields=place_fields            
         )
-        return users_lookup
+        return tweets_lookup
 
     @GET
-    def me(
+    def get_me(
         self,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        save: bool = True,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        save: Optional[bool] = True,
     ):
         """
             expansions: ['pinned_tweet_id']
         """
-        endpoint = constants.USERS_LOOKUP_ME_ENDPOINT
-        query = {'max_results': [constants.MAX_RESULTS_PER_PAGE]}
+        endpoint = USERS_LOOKUP_ME_ENDPOINT
         users_lookup = UsersLookup(
             endpoint=endpoint,
-            query=query,
             expansions=expansions,
             user_fields=user_fields,
             tweet_fields=tweet_fields
@@ -548,19 +650,21 @@ class TwitterAPI:
         return users_lookup
 
     @GET(pagination=True)    
-    def blocked_users(
+    def get_blocked_users(
         self,
         user_id: str,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        save: bool = True,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_USER,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        save: Optional[bool] = True,
     ):
         """
             expansions: ['pinned_tweet_id']
         """
-        endpoint = constants.USERS_LOOKUP_BLOCKED_ENDPOINT
-        query = {'max_results': [constants.MAX_RESULTS_PER_PAGE]}
+        max_results = max_results if max_results < MAX_RESULTS_PER_PAGE_USER else MAX_RESULTS_PER_PAGE_USER
+        endpoint = USERS_LOOKUP_BLOCKED_ENDPOINT
+        query = {'max_results': [str(max_results)]}
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<id>', user_id),
             query=query,
@@ -569,59 +673,23 @@ class TwitterAPI:
             tweet_fields=tweet_fields
         )
         return users_lookup
-        
-    @GET(pagination=True)
-    def users_bookmarks_by_id_url(
-        self,
-        user_id: str,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        media_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
-        poll_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_POLL_FIELDS,
-        place_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
-        save: bool = True,
-    ):
-        """
-            expansions: [
-                'attachments.media_keys',
-                'attachments.poll_ids',
-                'author_id',
-                'entities.mentions.username',
-                'geo.place_id',
-                'in_reply_to_user_id',
-                'referenced_tweets.id',
-                'referenced_tweets.id.author_id'
-            ]
-        """
-        endpoint = constants.USERS_LOOKUP_BOOKMARKS_ENDPOINT
-        query = {'max_results': [constants.MAX_RESULTS_PER_PAGE]}
-        users_lookup = UsersLookup(
-            endpoint=endpoint.replace('<id>', user_id),
-            query=query,
-            expansions=expansions,
-            user_fields=user_fields,
-            tweet_fields=tweet_fields,
-            media_fields=media_fields,
-            poll_fields=poll_fields,
-            place_fields=place_fields
-        )
-        return users_lookup
 
     @GET(pagination=True)
-    def user_muted(
+    def get_users_muted(
         self,
         user_id: str,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        save: bool = True,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        save: Optional[bool] = True,
     ):
         """
             expansions: ['pinned_tweet_id']
         """
-        endpoint = constants.USERS_LOOKUP_MUTED_ENDPOINT
-        query = {'max_results': [constants.MAX_RESULTS_PER_PAGE]}
+        max_results = max_results if max_results < MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = USERS_LOOKUP_MUTED_ENDPOINT
+        query = {'max_results': [str(max_results)]}
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<id>', user_id),
             query=query,
@@ -632,19 +700,21 @@ class TwitterAPI:
         return users_lookup
     
     @GET(pagination=True)
-    def users_that_retweeted(
+    def get_users_that_retweeted(
         self,
         tweet_id: str,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        save: bool = True,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        save: Optional[bool] = True,
     ):
         """
             expansions: ['pinned_tweet_id']
         """
-        endpoint = constants.USERS_LOOKUP_BY_RETWEET_ENDPOINT
-        query = {'max_results': [constants.MAX_RESULTS_PER_PAGE]}
+        max_results = max_results if max_results < MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = USERS_LOOKUP_BY_RETWEET_ENDPOINT
+        query = {'max_results': [str(max_results)]}
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<id>', tweet_id),
             query=query,
@@ -654,17 +724,17 @@ class TwitterAPI:
         )
         return users_lookup
     
-    @GET(pagination=True)
-    def users_tweets(
+    @GET
+    def get_tweets(
         self,
-        user_ids: list,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        media_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
-        poll_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_POLL_FIELDS,
-        place_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
-        save: bool = True,
+        tweet_ids: list,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        media_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
+        poll_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_POLL_FIELDS,
+        place_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
+        save: Optional[bool] = True,
     ):
         """
             expansions: [
@@ -678,11 +748,8 @@ class TwitterAPI:
                 'referenced_tweets.id.author_id'
             ]
         """
-        endpoint = constants.TWEETS_LOOKUP_BY_USERS_ENDPOINT
-        query = {
-            'ids': user_ids,
-            'max_results': [constants.MAX_RESULTS_PER_PAGE]
-        }
+        endpoint = TWEETS_LOOKUP_BY_USERS_ENDPOINT
+        query = {'ids': tweet_ids}
         tweet_lookup = TweetLookup(
             endpoint=endpoint,
             query=query,
@@ -695,17 +762,18 @@ class TwitterAPI:
         )
         return tweet_lookup
 
-    @GET
-    def tweet(
+    @GET(pagination=True)
+    def get_user_bookmarked_tweets(
         self,
-        tweet_id: str,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        media_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
-        poll_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_POLL_FIELDS,
-        place_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
-        save: bool = True,
+        user_id: str,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        media_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
+        poll_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_POLL_FIELDS,
+        place_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
+        save: Optional[bool] = True,
     ):
         """
             expansions: [
@@ -719,10 +787,11 @@ class TwitterAPI:
                 'referenced_tweets.id.author_id'
             ]
         """
-        endpoint = constants.TWEETS_LOOKUP_BY_ID_ENDPOINT
-        query = {'max_results': [constants.MAX_RESULTS_PER_PAGE]}
+        max_results = max_results if 5 <= max_results < MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = USERS_LOOKUP_BOOKMARKS_ENDPOINT
+        query = {'max_results': [str(max_results)]}
         tweet_lookup = TweetLookup(
-            endpoint=endpoint.replace('<id>', tweet_id),
+            endpoint=endpoint.replace('<id>', user_id),
             query=query,
             expansions=expansions,
             user_fields=user_fields,
@@ -733,17 +802,17 @@ class TwitterAPI:
         )
         return tweet_lookup
 
-    @GET(pagination=True)
-    def tweet_quotes(
+    @GET
+    def get_tweet(
         self,
         tweet_id: str,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        media_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
-        poll_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_POLL_FIELDS,
-        place_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
-        save: bool = True,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        media_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
+        poll_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_POLL_FIELDS,
+        place_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
+        save: Optional[bool] = True,
     ):
         """
             expansions: [
@@ -757,8 +826,46 @@ class TwitterAPI:
                 'referenced_tweets.id.author_id'
             ]
         """
-        endpoint = constants.TWEETS_LOOKUP_TWEETS_QUOTES_ENDPOINT
-        query = {'max_results': [constants.MAX_RESULTS_PER_PAGE]}
+        endpoint = TWEETS_LOOKUP_BY_ID_ENDPOINT
+        tweet_lookup = TweetLookup(
+            endpoint=endpoint.replace('<id>', tweet_id),
+            expansions=expansions,
+            user_fields=user_fields,
+            tweet_fields=tweet_fields,
+            media_fields=media_fields,
+            poll_fields=poll_fields,
+            place_fields=place_fields
+        )
+        return tweet_lookup
+
+    @GET(pagination=True)
+    def get_tweet_quotes(
+        self,
+        tweet_id: str,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        media_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
+        poll_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_POLL_FIELDS,
+        place_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
+        save: Optional[bool] = True,
+    ):
+        """
+            expansions: [
+                'attachments.media_keys',
+                'attachments.poll_ids',
+                'author_id',
+                'entities.mentions.username',
+                'geo.place_id',
+                'in_reply_to_user_id',
+                'referenced_tweets.id',
+                'referenced_tweets.id.author_id'
+            ]
+        """
+        max_results = max_results if 5 <= max_results < MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = TWEETS_LOOKUP_TWEETS_QUOTES_ENDPOINT
+        query = {'max_results': [str(max_results)]}
         tweet_lookup = TweetLookup(
             endpoint=endpoint.replace('<id>', tweet_id),
             query=query,
@@ -781,12 +888,12 @@ class TwitterAPI:
         until_id: str = None,
         sort_order: str = 'recency',
         qquery: str = None,
-        expansions: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_EXPANSION,
-        user_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_USER_FIELDS,
-        tweet_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
-        media_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
-        poll_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_POLL_FIELDS,
-        place_fields: Optional[List[str]]= constants.DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        media_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_MEDIA_FIELDS,
+        poll_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_POLL_FIELDS,
+        place_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_PLACE_FIELDS,
     ):
 
         """
@@ -798,8 +905,8 @@ class TwitterAPI:
         :param qquery: build query with https://developer.twitter.com/apitools/api?endpoint=%2F2%2Ftweets%2Fsearch%2Fall&method=get"
         """
 
-        endpoint = constants.TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT if recent else constants.TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT 
-        query = {'max_results': [constants.MAX_RESULTS_PER_PAGE]}
+        endpoint = TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT if recent else TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT 
+        query = {'max_results': [MAX_RESULTS_PER_PAGE_DEFAULT]}
         if qquery:
             query['query'] = qquery
         if start_time:
@@ -836,11 +943,11 @@ class TwitterAPI:
         until_id: str = None,
         granularity: str = 'day',
         qquery: str = None,
-        count_fields = constants.DEFAULT_TWEETS_LOOKUP_COUNT,
+        count_fields = DEFAULT_TWEETS_LOOKUP_COUNT,
     ):
 
-        endpoint = constants.TWEETS_LOOKUP_RECENT_COUNT_ENDPOINT if recent else constants.TWEETS_LOOKUP_ALL_COUNT_ENDPOINT
-        query = {'max_results': [constants.MAX_RESULTS_PER_PAGE]}
+        endpoint = TWEETS_LOOKUP_RECENT_COUNT_ENDPOINT if recent else TWEETS_LOOKUP_ALL_COUNT_ENDPOINT
+        query = {'max_results': [MAX_RESULTS_PER_PAGE_DEFAULT]}
         if qquery:
             query['query'] = qquery
         if start_time:
@@ -861,9 +968,19 @@ class TwitterAPI:
         )
         return tweet_lookup
 
-    
-
-
+    @POST
+    def post_tweet(
+        self,
+        text: str,
+        in_reply_to_tweet: Optional[str] = None,
+    ):  
+        endpoint = POST_TWEET_ENDPOINT
+        payload = {'text': text}
+        if in_reply_to_tweet:
+            payload['reply'] = {
+                'in_reply_to_tweet_id': in_reply_to_tweet
+                }
         
+        return endpoint, payload
 
 

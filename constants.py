@@ -1,6 +1,10 @@
 MAX_URL_LENGTH = 500
-MAX_RESULTS_PER_PAGE = 100
+MAX_RESULTS_PER_PAGE_DEFAULT = 100
+MAX_RESULTS_PER_PAGE_USER = 1000
 MAX_PAGES = 10
+MAX_USERS_ID = 100
+REFRESH_MARGIN = 60
+REFRESH_REFRESH_MARGIN = 43200
 
 ALL_USER_FIELDS = [
     'id',
@@ -110,10 +114,6 @@ ALL_SCOPES = [
     'bookmark.write', 
 ]
 
-REQUIRED_SCOPES = {
-    "users_tweets": ['tweet.read', 'user.read']
-}
-
 
 BASE_URL_V2 = "https://api.twitter.com/2"
 BASE_REQUEST_TOKEN_URL = "https://api.twitter.com/oauth/request_token"
@@ -151,6 +151,8 @@ TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT = "https://api.twitter.com/2/tweets/search/re
 TWEETS_LOOKUP_COUNT_ENDPOINT = "https://api.twitter.com/2/tweets/counts/all"
 TWEETS_LOOKUP_RECENT_COUNT_ENDPOINT = "https://api.twitter.com/2/tweets/counts/recent"
 
+POST_TWEET_ENDPOINT = "https://api.twitter.com/2/tweets"
+
 DEFAULT_USERS_LOOKUP_EXPANSION = []
 DEFAULT_USERS_LOOKUP_USER_FIELDS = ALL_USER_FIELDS[:6]
 DEFAULT_USERS_LOOKUP_TWEET_FIELDS = ALL_TWEET_FIELDS[:7]
@@ -162,5 +164,7 @@ DEFAULT_USERS_LOOKUP_PLACE_FIELDS = ALL_PLACE_FIELDS[:3]
 DEFAULT_TWEETS_LOOKUP_COUNT = ['start', 'end', 'tweet_count']
 
 DEFAULT_SCOPES = ['tweet.write', 'tweet.read', 'users.read', 'offline.access']
+
+
 
 IMPLEMENTED_MODELS = ['users', 'tweets']

@@ -1,8 +1,9 @@
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Union, List
 
 import constants
-
+from models.user import User
+from models.tweet import Tweet
 
 @dataclass
 class Lookup:
@@ -55,7 +56,7 @@ class Lookup:
             data_data = data['data']
             data_includes = data.get('includes')
             for res in responses[1:]:
-                data_data.append(res['data'])
+                data_data.extend(res['data'])
                 if data_includes:
                     for field in constants.IMPLEMENTED_MODELS:
                         if data_includes.get(field, False):
@@ -72,9 +73,28 @@ class Lookup:
 class UsersLookup(Lookup):
     def save_response(response):
         pass
-    
+
+    def datify(self, response: Union[dict, List[dict]]) -> Union[User, List[User]]:
+        if response.get('data'):
+            data = response['data']
+            if isinstance(data, dict):
+                return User.from_dict(data)
+            users = []
+            for user_data in response['data']:
+                users.append(User.from_dict(user_data))
+            return users
 @dataclass
 class TweetLookup(Lookup):
     def save_response(response):
         pass
+
+    def datify(self, response: Union[dict, List[dict]]) -> Union[Tweet, List[Tweet]]:
+        if response.get('data'):
+            data = response['data']
+            if isinstance(data, dict):
+                return Tweet.from_dict(data)
+            tweets = []
+            for tweets_data in data:
+                tweets.append(Tweet.from_dict(tweets_data))
+            return tweets
 
