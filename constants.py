@@ -142,12 +142,14 @@ USERS_LOOKUP_BOOKMARKS_ENDPOINT = "https://api.twitter.com/2/users/<id>/bookmark
 USERS_LOOKUP_MUTED_ENDPOINT = "https://api.twitter.com/2/users/<id>/muting"
 USERS_LOOKUP_BY_RETWEET_ENDPOINT = "https://api.twitter.com/2/tweets/<id>/retweeted_by"
 USERS_LOOKUP_THAT_LIKED_TWEET_ENDPOINT = "https://api.twitter.com/2/tweets/<tweet_id>/liking_users"
+USERS_LOOKUP_THAT_FOLLOW_LIST_ENDPOINT = "https://api.twitter.com/2/lists/<list_id>/followers"
+USERS_LOOKUP_LIST_MEMBERS_ENDPOINT = "https://api.twitter.com/2/lists/<list_id>/members"
 
 TWEETS_LOOKUP_BY_USERS_ENDPOINT = "https://api.twitter.com/2/tweets"
 TWEETS_LOOKUP_BY_ID_ENDPOINT = "https://api.twitter.com/2/tweets/<id>"
 TWEETS_LOOKUP_TWEETS_QUOTES_ENDPOINT = "https://api.twitter.com/2/tweets/<id>/quote_tweets"
 TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT = "https://api.twitter.com/2/tweets/search/all"
-TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT = "https://api.twitter.com/2/tweets/search/recent"
+TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT = "https://api.twitter.com/2/tweets/search/all"
 TWEETS_LOOKUP_COUNT_ENDPOINT = "https://api.twitter.com/2/tweets/counts/all"
 TWEETS_LOOKUP_RECENT_COUNT_ENDPOINT = "https://api.twitter.com/2/tweets/counts/recent"
 

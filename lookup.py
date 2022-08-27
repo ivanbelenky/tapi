@@ -25,8 +25,14 @@ class Lookup:
             or self.media_fields or self.poll_fields \
             or self.place_fields or self.query else ''
         if self.query:
-            for q, values in self.query.items():
-                url += f"{q}={','.join(values)}"
+            for i, (q, value) in enumerate(self.query.items()):
+                if i != 0:
+                    url += "&"
+                if isinstance(value, list):
+                    url += f"{q}={','.join(value)}"
+                else:
+                    url += f"{q}={value}"
+
         url += '' if not self.user_fields else f"&user.fields={','.join(self.user_fields)}" 
         url += '' if not self.list_fields else f"&list.fields={','.join(self.list_fields)}"
         url += '' if not self.expansions else f"&expansions={','.join(self.expansions)}" 

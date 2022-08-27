@@ -59,6 +59,16 @@ LIMITER = {
         'limit': 75,
         'auth': 'BEARER_TOKEN'
     },
+    "get_users_that_follow_list": {
+        'scopes': ['tweet.read', 'users.read', 'list.read', 'offline.access'],
+        'limit': 180,
+        'auth': 'BEARER_TOKEN'
+    },
+    "get_list_members": {
+        'scopes': ['tweet.read', 'users.read', 'list.read', 'offline.access'],
+        'limit': 900,
+        'auth': 'BEARER_TOKEN'
+    },
     "get_user_mentions": { 
         'scopes' : ['tweet.read', 'user.read', 'offline.access'],
         'limit': 180,
@@ -90,8 +100,13 @@ LIMITER = {
         'auth': 'BEARER_TOKEN'
     },
     'post_tweet': {
-        'scopes' : ['tweet.read', 'tweet.write', 'users.read'],
+        'scopes' : ['tweet.read', 'tweet.write', 'users.read', 'offline.access'],
         'limit': 200,
         'auth': 'OAUTH_SIGNATURE'
+    },
+    'tweet_full_search': {
+        'scopes': ['tweet.read', 'tweet.write', 'users.read', 'offline.access'],
+        'limit': 900,
+        'auth': 'BEARER_TOKEN'
     }
 }

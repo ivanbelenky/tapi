@@ -1,15 +1,17 @@
 import os
 import time
 import json
+from tkinter.tix import Tree
 from typing import List, Union, Dict
 from dataclasses import asdict
-
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 from pprint import pprint
 
 from api import TwitterAPI
-from constants import ALL_SCOPES, ALL_USER_FIELDS
+from constants import ALL_SCOPES, ALL_TWEET_FIELDS, ALL_USER_FIELDS
+from utils import datetime_parser
 
 load_dotenv()
 
@@ -47,10 +49,35 @@ def fetch_and_save_all_followers(user_id: str, twitter=twitter):
     except Exception as e:
         print(f"Failed to fetch all followers: {e}")
 
-    return user_followers        
+    return user_followers  
 
+def fetch_all_hagovs(twitter=twitter):
+    hagovs = twitter.get_list_members(
+        '1537128547470417925',
+        max_results=1000,
+        user_fields=ALL_USER_FIELDS,
+    )
+    with open(f'data/users/hagovs.json', 'w') as file:
+        json.dump(
+            [asdict(hagov) for hagov in hagovs],
+            file,
+            skipkeys=True,
+            indent=3
+        )
 
+def fetch_user_recent_tweets(username: str, twitter=twitter, days_back=7):
+    user = twitter.get_users_by_username_regex(username)
+    pprint(user)
+    qquery = f'from%3A{user.id}'
+    tweets = twitter.tweet_full_search(
+        max_results=500,
+        start_time=datetime_parser(datetime.utcnow() - timedelta(days=days_back)),
+        sort_order='recency',
+        qquery=qquery,
+        tweet_fields=ALL_TWEET_FIELDS,
+    )
+    return tweets
 
 if __name__ == "__main__":
-    fetch_and_save_all_followers('747898915', twitter=twitter)
-    
+    #fetch_all_hagovs(twitter=twitter)    
+    pprint(fetch_user_recent_tweets('mauriciomacri', twitter=twitter, days_back=1))

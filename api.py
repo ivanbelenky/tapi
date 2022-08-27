@@ -23,7 +23,7 @@ load_dotenv()
 def paginator(tapi, lookup, max_results, limit):
     url = lookup.create_url()
     next_url = url
-    n_pages = max_results//MAX_RESULTS_PER_PAGE_USER+1
+    n_pages = max_results//MAX_RESULTS_PER_PAGE_DEFAULT+1
     for page in range(n_pages):
         print(f"Fetched page {page+1} of {n_pages}")
         if page != 0:
@@ -78,7 +78,7 @@ def GET(method, pagination=False):
             print(e)
             return res
         except Exception as e:
-            print(f"Failed to get {method.__name__}: {e}")
+            print(f"Failed to get {method.__name__}: {type(e)} {e}")
             try:
                 print(res.json().get('errors'),'\n')
             except Exception as e:
@@ -186,16 +186,23 @@ class TwitterAPI:
         self.save_token()            
 
     def retrieve_token(self):
-        if 'twitter.token' in os.listdir('data/saved_tokens'):
-            with open('data/saved_tokens/twitter.token', 'r') as file:
-                return json.load(file)
-        else:
-            return None
+        try:
+            if 'twitter.token' in os.listdir('data/saved_tokens'):
+                with open('data/saved_tokens/twitter.token', 'r') as file:
+                    return json.load(file)
+            else:
+                return None
+        except Exception as e:
+            print(f"Failed to retrieve token: {e}") 
+
 
     def save_token(self):
-        if self.token:
-            with open('data/saved_tokens/twitter.token', 'w') as file:
-                json.dump(self.token, file)
+        try:
+            if self.token:
+                with open('data/saved_tokens/twitter.token', 'w') as file:
+                    json.dump(self.token, file)
+        except Exception as e:
+            print(f"Failed to save token: {e}")
 
     def _should_refresh(self):
         if self.token:
@@ -528,6 +535,56 @@ class TwitterAPI:
         query = {'max_results': [str(max_results)]}
         users_lookup = UsersLookup(
             endpoint=endpoint.replace('<tweet_id>', tweet_id),
+            query=query,
+            expansions=expansions,
+            tweet_fields=tweet_fields,
+            user_fields=user_fields,
+        )
+        return users_lookup
+
+    @GET(pagination=True)
+    def get_users_that_follow_list(
+        self,
+        list_id: str,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        save: Optional[bool] = False,
+    ):
+        """
+            expansions: ['pinned_tweet_id']
+        """
+        max_results = max_results if max_results < MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = USERS_LOOKUP_THAT_FOLLOW_LIST_ENDPOINT
+        query = {'max_results': [str(max_results)]}
+        users_lookup = UsersLookup(
+            endpoint=endpoint.replace('<list_id>', list_id),
+            query=query,
+            expansions=expansions,
+            tweet_fields=tweet_fields,
+            user_fields=user_fields,
+        )
+        return users_lookup
+
+    @GET(pagination=True)
+    def get_list_members(
+        self,
+        list_id: str,
+        max_results: Optional[int] = MAX_RESULTS_PER_PAGE_DEFAULT,
+        expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
+        tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
+        user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
+        save: Optional[bool] = False,
+    ):
+        """
+            expansions: ['pinned_tweet_id']
+        """
+        max_results = max_results if max_results < MAX_RESULTS_PER_PAGE_DEFAULT else MAX_RESULTS_PER_PAGE_DEFAULT
+        endpoint = USERS_LOOKUP_LIST_MEMBERS_ENDPOINT
+        query = {'max_results': [str(max_results)]}
+        users_lookup = UsersLookup(
+            endpoint=endpoint.replace('<list_id>', list_id),
             query=query,
             expansions=expansions,
             tweet_fields=tweet_fields,
@@ -881,13 +938,14 @@ class TwitterAPI:
     @GET(pagination=True)
     def tweet_full_search(
         self,
+        max_results: Optional[int] = 500,
         recent: bool = False,
-        start_time: datetime = None,
-        end_time: datetime = None,
-        since_id: str = None,
-        until_id: str = None,
-        sort_order: str = 'recency',
-        qquery: str = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        since_id: Optional[str] = None,
+        until_id: Optional[str] = None,
+        sort_order: Optional[str] = 'recency',
+        qquery: Optional[str] = None,
         expansions: Optional[List[str]]= DEFAULT_USERS_LOOKUP_EXPANSION,
         user_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_USER_FIELDS,
         tweet_fields: Optional[List[str]]= DEFAULT_USERS_LOOKUP_TWEET_FIELDS,
@@ -904,11 +962,12 @@ class TwitterAPI:
         :param sort_order: Sort by 'recency' or 'relevancy'
         :param qquery: build query with https://developer.twitter.com/apitools/api?endpoint=%2F2%2Ftweets%2Fsearch%2Fall&method=get"
         """
-
+        max_results = 500 if  max_results > 500 or max_results < 10 else max_results
         endpoint = TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT if recent else TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT 
-        query = {'max_results': [MAX_RESULTS_PER_PAGE_DEFAULT]}
+        query = dict()
         if qquery:
             query['query'] = qquery
+        query['max_results'] = [str(max_results)]
         if start_time:
             query['start_time'] = start_time
         if end_time:
@@ -918,7 +977,7 @@ class TwitterAPI:
         if until_id:
             query['until_id'] = until_id
         if sort_order in ['recency', 'relevancy']:
-            until_id['sort_order'] = sort_order
+            query['sort_order'] = [sort_order]
         
         tweet_lookup = TweetLookup(
             endpoint=endpoint,
