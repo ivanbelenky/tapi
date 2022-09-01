@@ -186,7 +186,7 @@ class TwitterAPI:
             self.token['refresh_token'] = refresh_token['refresh_token']
             self.token['expires_at'] = int(time.time()) + refresh_token['expires_in']
         
-        self.save_token()            
+        self.save_token()
 
     def retrieve_token(self):
         try:
