@@ -149,9 +149,10 @@ TWEETS_LOOKUP_BY_USERS_ENDPOINT = "https://api.twitter.com/2/tweets"
 TWEETS_LOOKUP_BY_ID_ENDPOINT = "https://api.twitter.com/2/tweets/<id>"
 TWEETS_LOOKUP_TWEETS_QUOTES_ENDPOINT = "https://api.twitter.com/2/tweets/<id>/quote_tweets"
 TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT = "https://api.twitter.com/2/tweets/search/all"
-TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT = "https://api.twitter.com/2/tweets/search/all"
+TWEETS_LOOKUP_RECENT_SEARCH_ENDPOINT = "https://api.twitter.com/2/tweets/search/recent"
 TWEETS_LOOKUP_COUNT_ENDPOINT = "https://api.twitter.com/2/tweets/counts/all"
 TWEETS_LOOKUP_RECENT_COUNT_ENDPOINT = "https://api.twitter.com/2/tweets/counts/recent"
+
 
 POST_TWEET_ENDPOINT = "https://api.twitter.com/2/tweets"
 

@@ -69,15 +69,18 @@ def fetch_user_recent_tweets(username: str, twitter=twitter, days_back=7):
     user = twitter.get_users_by_username_regex(username)
     pprint(user)
     qquery = f'from%3A{user.id}'
-    tweets = twitter.tweet_full_search(
-        max_results=500,
+    tweets = twitter.tweet_recent_search(
+        max_results=10,
         start_time=datetime_parser(datetime.utcnow() - timedelta(days=days_back)),
         sort_order='recency',
         qquery=qquery,
-        tweet_fields=ALL_TWEET_FIELDS,
+        user_fields=[],
+        place_fields=[],
+        poll_fields=[],
+        media_fields=[],
     )
     return tweets
 
 if __name__ == "__main__":
     #fetch_all_hagovs(twitter=twitter)    
-    pprint(fetch_user_recent_tweets('mauriciomacri', twitter=twitter, days_back=1))
+    pprint(fetch_user_recent_tweets('tomasrebord', twitter=twitter, days_back=1))

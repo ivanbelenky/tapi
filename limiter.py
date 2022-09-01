@@ -104,7 +104,7 @@ LIMITER = {
         'limit': 200,
         'auth': 'OAUTH_SIGNATURE'
     },
-    'tweet_full_search': {
+    'tweet_recent_search': {
         'scopes': ['tweet.read', 'tweet.write', 'users.read', 'offline.access'],
         'limit': 900,
         'auth': 'BEARER_TOKEN'

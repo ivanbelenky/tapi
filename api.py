@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from inspect import Attribute
+from multiprocessing.sharedctypes import Value
 import os
 import base64
 import json
@@ -20,25 +21,25 @@ from lookup import UsersLookup, TweetLookup
 
 load_dotenv()
 
-def paginator(tapi, lookup, max_results, limit):
+def paginator(tapi, lookup, max_results, limit, app_only_auth):
     url = lookup.create_url()
     next_url = url
     n_pages = max_results//MAX_RESULTS_PER_PAGE_DEFAULT+1
     for page in range(n_pages):
+        time.sleep(limit)
         print(f"Fetched page {page+1} of {n_pages}")
         if page != 0:
-            time.sleep(limit)
             next_url = lookup.next_page(url, response)
         if not next_url:
             break
 
-        response = tapi._get(next_url)
+        response = tapi._get(next_url, app_only_auth)
         response.raise_for_status()
         yield response.json()
         
             
-def paginate_response(session, lookup, max_results, limit):    
-    responses = [res for res in paginator(session, lookup, max_results, limit)]
+def paginate_response(session, lookup, max_results, limit, app_only_auth):    
+    responses = [res for res in paginator(session, lookup, max_results, limit, app_only_auth)]
     return lookup.paginate_responses(responses)
 
 
@@ -53,13 +54,14 @@ def doublewrap(f):
 
 
 @doublewrap
-def GET(method, pagination=False):
+def GET(method, pagination=False, app_only_auth=False):
     def wrapper(self, *args, **kwargs):
         res = None
         try:
             lookup = method(self, *args, **kwargs)
+            
             if not pagination:
-                res = self._get(lookup.create_url())
+                res = self._get(lookup.create_url(), app_only_auth)
                 res.raise_for_status()
                 res = res.json() if res.json().get('data') else {}
             else:
@@ -67,7 +69,8 @@ def GET(method, pagination=False):
                     self, 
                     lookup, 
                     kwargs.get('max_results'),
-                    15*60//LIMITER[method.__name__]['limit']
+                    15*60//LIMITER[method.__name__]['limit'],
+                    app_only_auth
                 )
             
             if kwargs.get('save', False):
@@ -225,14 +228,19 @@ class TwitterAPI:
             resp_url = input("Paste the response from the above link: \n")
             self.fetch_token(resp_url)
 
-    def _get(self, url):
+    def _get(self, url, app_only_auth):
         if self._should_refresh():
             self.refresh_token()
-        return request(
-            method="GET",
-            url=url,
-            headers={'Authorization': f"Bearer {self.token['access_token']}"}
-        )
+        token = self.token['access_token'] if not app_only_auth else self.bearer_token
+        if token:
+            return request(
+                method="GET",
+                url=url,
+                headers={
+                    'Authorization': f"Bearer {token}"
+                }
+            )
+        raise ValueError("No Bearer Token found.")
     
     def _post(self, url, payload):
         if self._should_refresh():
@@ -935,11 +943,10 @@ class TwitterAPI:
         )
         return tweet_lookup
 
-    @GET(pagination=True)
-    def tweet_full_search(
+    @GET(pagination=True, app_only_auth=True)
+    def tweet_recent_search(
         self,
         max_results: Optional[int] = 500,
-        recent: bool = False,
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         since_id: Optional[str] = None,
@@ -962,12 +969,10 @@ class TwitterAPI:
         :param sort_order: Sort by 'recency' or 'relevancy'
         :param qquery: build query with https://developer.twitter.com/apitools/api?endpoint=%2F2%2Ftweets%2Fsearch%2Fall&method=get"
         """
-        max_results = 500 if  max_results > 500 or max_results < 10 else max_results
-        endpoint = TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT if recent else TWEETS_LOOKUP_FULL_SEARCH_ENDPOINT 
+        max_results = 100 if max_results > 100 or max_results < 10 else max_results   
         query = dict()
         if qquery:
             query['query'] = qquery
-        query['max_results'] = [str(max_results)]
         if start_time:
             query['start_time'] = start_time
         if end_time:
@@ -978,9 +983,10 @@ class TwitterAPI:
             query['until_id'] = until_id
         if sort_order in ['recency', 'relevancy']:
             query['sort_order'] = [sort_order]
+        query['max_results'] = [str(max_results)]
         
         tweet_lookup = TweetLookup(
-            endpoint=endpoint,
+            endpoint=TWEETS_LOOKUP_RECENT_SEARCH_ENDPOINT,
             query=query,
             expansions=expansions,
             user_fields=user_fields,
