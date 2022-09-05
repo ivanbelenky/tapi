@@ -31,16 +31,16 @@ ALL_TWEET_FIELDS = [
     'in_reply_to_user_id',
     'referenced_tweets',
     'conversation_id',
+    'public_metrics',
+    'geo',
     'attachments',
     'context_annotations',
     'entities',
-    'geo',
     'lang',
     'non_public_metrics',
     'organic_metrics',
     'possibly_sensitive',
     'promoted_metrics',
-    'public_metrics',
     'reply_settings',
     'source',
     'withheld'
@@ -158,7 +158,7 @@ POST_TWEET_ENDPOINT = "https://api.twitter.com/2/tweets"
 
 DEFAULT_USERS_LOOKUP_EXPANSION = []
 DEFAULT_USERS_LOOKUP_USER_FIELDS = ALL_USER_FIELDS[:6]
-DEFAULT_USERS_LOOKUP_TWEET_FIELDS = ALL_TWEET_FIELDS[:7]
+DEFAULT_USERS_LOOKUP_TWEET_FIELDS = ALL_TWEET_FIELDS[:9]
 DEFAULT_USERS_LOOKUP_LIST_FIELDS = ALL_LIST_FIELDS[:5]
 DEFAULT_USERS_LOOKUP_MEDIA_FIELDS = []
 DEFAULT_USERS_LOOKUP_POLL_FIELDS = []

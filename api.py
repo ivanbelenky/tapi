@@ -27,7 +27,6 @@ def paginator(tapi, lookup, max_results, limit, app_only_auth):
     n_pages = max_results//MAX_RESULTS_PER_PAGE_DEFAULT+1
     for page in range(n_pages):
         time.sleep(limit)
-        print(f"Fetched page {page+1} of {n_pages}")
         if page != 0:
             next_url = lookup.next_page(url, response)
         if not next_url:
@@ -998,10 +997,9 @@ class TwitterAPI:
         return tweet_lookup
 
 
-    @GET(pagination=True)
-    def tweet_counts(
+    @GET(pagination=True, app_only_auth=True)
+    def tweet_recent_count(
         self,
-        recent: bool = False,
         start_time: datetime = None,
         end_time: datetime = None,
         since_id: str = None,
@@ -1011,7 +1009,7 @@ class TwitterAPI:
         count_fields = DEFAULT_TWEETS_LOOKUP_COUNT,
     ):
 
-        endpoint = TWEETS_LOOKUP_RECENT_COUNT_ENDPOINT if recent else TWEETS_LOOKUP_ALL_COUNT_ENDPOINT
+        endpoint = TWEETS_LOOKUP_RECENT_COUNT_ENDPOINT
         query = {'max_results': [MAX_RESULTS_PER_PAGE_DEFAULT]}
         if qquery:
             query['query'] = qquery

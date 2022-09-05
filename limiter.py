@@ -106,7 +106,7 @@ LIMITER = {
     },
     'tweet_recent_search': {
         'scopes': ['tweet.read', 'tweet.write', 'users.read', 'offline.access'],
-        'limit': 900,
+        'limit': 450,
         'auth': 'BEARER_TOKEN'
     }
 }
